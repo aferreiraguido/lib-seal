@@ -1,0 +1,38 @@
+docs/
+
+# Maven build output
+target/
+*.class
+
+# Maven wrappers / logs
+*.log
+hs_err_pid*.log
+
+# Package files
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+
+# IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+.classpath
+.project
+.settings/
+.vscode/
+*.code-workspace
+nbproject/
+nb-configuration.xml
+
+# OS junk
+Thumbs.db
+.DS_Store
+*~
+
+# Patch leftovers
+*.orig
+*.rej

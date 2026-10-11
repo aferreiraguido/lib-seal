@@ -1,0 +1,27 @@
+libseal — field-level encryption at rest for JPA
+Copyright (C) 2026 aFE
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, version 3 of the License.
+See the LICENSE file for the full license text.
+
+ADDITIONAL TERMS UNDER AGPL-3.0 SECTION 7(b)
+(preservation of author attributions; these terms supplement — and do not
+replace — the terms of the GNU Affero General Public License version 3)
+
+For material you convey that is based on this Program, you must:
+
+  a) preserve unmodified, in every source file derived from this Program,
+     the copyright line "Copyright (C) 2026 aFE" and the pointer to this
+     NOTICE file; and
+
+  b) where the work displays Appropriate Legal Notices (as defined in
+     section 0 of the License), include the attribution
+     "libseal — Copyright (C) 2026 aFE — AGPL-3.0-only".
+
+These requirements are stated under section 7(b) of the License
+("requiring preservation of specified reasonable legal notices or author
+attributions in that material or in the Appropriate Legal Notices
+displayed by works containing it") and are not further restrictions
+within the meaning of section 10.

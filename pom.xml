@@ -1,0 +1,54 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>libseal</groupId>
+  <artifactId>lib-seal</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>libseal - sellado de campos en reposo (DB-only v1)</name>
+
+  <licenses>
+    <license>
+      <name>GNU Affero General Public License, version 3</name>
+      <url>https://www.gnu.org/licenses/agpl-3.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <modules>
+    <module>libseal-core</module>
+    <module>libseal-hibernate6</module>
+    <module>libseal-hibernate5</module>
+    <module>libseal-quarkus</module>
+    <module>libseal-spring</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <tink.version>1.18.0</tink.version>
+    <jakarta.persistence.version>3.1.0</jakarta.persistence.version>
+    <javax.persistence.version>2.2</javax.persistence.version>
+    <hibernate.version>6.4.4.Final</hibernate.version>
+    <hibernate5.version>5.6.10.Final</hibernate5.version>
+    <h2.version>2.2.224</h2.version>
+    <quarkus.version>3.15.1</quarkus.version>
+    <quarkus2.version>2.13.8.Final</quarkus2.version>
+    <spring-boot.version>3.2.5</spring-boot.version>
+    <junit4.version>4.13.2</junit4.version>
+  </properties>
+
+  <!-- Stack legacy Quarkus 2.13 (Hibernate 5 + javax): solo con -Pquarkus2 y red,
+       pues sus artefactos no están en la caché offline por defecto. -->
+  <profiles>
+    <profile>
+      <id>quarkus2</id>
+      <modules>
+        <module>libseal-quarkus2</module>
+      </modules>
+    </profile>
+  </profiles>
+</project>
