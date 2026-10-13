@@ -130,4 +130,64 @@ public class SealedCodecTest {
     assertTrue(codec.needsMigration(null));
     assertFalse(codec.needsMigration("v9:abc"));
   }
+
+  @Test
+  public void sealEncryptAndHashOnlyAreIndependent() {
+    String enc = codec.sealEncrypt("hola@x.com", "customer.email");
+    assertTrue(enc.startsWith("v9:"));
+    assertEquals("hola@x.com", codec.fromColumns(null, enc, "customer.email"));
+    String h = codec.hashOnly("hola@x.com", "customer.email");
+    assertTrue(h.startsWith("v9:"));
+    assertNull(codec.sealEncrypt(null, "d"));
+    assertNull(codec.hashOnly(null, "d"));
+  }
+
+  @Test
+  public void emptyAndWhitespaceValuesRoundtrip() {
+    // Cadena vacia: se sella (no es null); el fake hashea igualmente
+    SealedCodec.EncHash empty = codec.toColumns("", "d", true);
+    assertTrue(empty.encrypt().startsWith("v9:"));
+    assertEquals("", codec.fromColumns(null, empty.encrypt(), "d"));
+    // Con HmacBlindIndexer real, "" y "   " dan hash vacio (short-circuit)
+    BlindIndexer real = new HmacBlindIndexer(new byte[16], "v1");
+    assertEquals("", real.hash("", "d"));
+    assertEquals("", real.hash("   ", "d"));
+  }
+
+  @Test
+  public void nfkcNormalizationCollapsesCompatibilityForms() {
+    // 'é' precompuesto (U+00E9) vs 'e'+combinante (U+0065 U+0301) normalizan igual
+    String a = "mail\u00e9@x.com";
+    String b = "mail\u0065\u0301@x.com";
+    assertEquals(SealedSupport.normalize(a), SealedSupport.normalize(b));
+    assertEquals(
+        codec.toColumns(a, "d", true).hash(),
+        codec.toColumns(b, "d", true).hash());
+  }
+
+  @Test
+  public void longValueRoundtripsBeyondLegacyColumn() {
+    // Valores largos: el ciphertext Base64 expande; el codec no trunca.
+    String longValue = "x".repeat(3000) + "@x.com";
+    SealedCodec.EncHash eh = codec.toColumns(longValue, "customer.email", true);
+    assertTrue(eh.encrypt().length() > longValue.length()); // expansion Base64
+    assertEquals(longValue, codec.fromColumns(null, eh.encrypt(), "customer.email"));
+  }
+
+  /**
+   * Contrato fisico compartido H5&lt;-&gt;H6: mismos nombres de columna por convencion
+   * y mismo formato versionado {@code vN:}. Una BD sellada por una rama la lee la otra
+   * porque ambas derivan estas columnas del mismo {@link SealedCodec}.
+   */
+  @Test
+  public void physicalContractIsStableAcrossBranches() throws Exception {
+    SealedCodec.Resolved r = SealedCodec.resolve("email", annOf("email"));
+    assertEquals("email", r.legacyCol());
+    assertEquals("email_se", r.encryptCol());
+    assertEquals("email_sh", r.hashCol());
+    // Formato versionado en ambas columnas
+    SealedCodec.EncHash eh = codec.toColumns("a@x.com", "customer.email", true);
+    assertTrue(SealedSupport.isSealedFormat(eh.encrypt()));
+    assertTrue(SealedSupport.isSealedFormat(eh.hash()));
+  }
 }

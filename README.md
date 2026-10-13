@@ -43,6 +43,19 @@ public class SealBeans {
 }
 ```
 
+Alternativa en una linea: `SealedKeys.from(keyProvider)` devuelve `Beans(sealer, indexer)` a partir de un `KeyProvider` (`ConfigKeyProvider` lee `SEAL_PEPPER_B64`/version del cluster).
+
+El arranque (reconcile DDL + backfill STRICT + purga legacy + registro LAZY) es automatico: `SealedBootstrap` escucha el `StartupEvent` y ejecuta `SealedRuntime.run`. Solo declara las entidades gestionadas:
+
+```java
+@ApplicationScoped
+public class MisEntidades implements SealedEntitySource {
+  public List<Class<?>> sealedEntities() { return List.of(Customer.class, Contact.class); }
+}
+```
+
+Sin ningun `SealedEntitySource` el arranque es no-op. Las props `seal.*` se leen de MicroProfile Config.
+
 `application.yaml`:
 
 ```yaml
@@ -55,7 +68,12 @@ seal:
   migration-default: LAZY        # DISABLED | LAZY | STRICT | STRICT_LAZY
   batch-size: 500
   drop-legacy: false
+  strict-locking: true           # false en motores sin FOR UPDATE SKIP LOCKED (p. ej. H2)
+  export-path: build/libseal.sql # opcional: escribe el DDL Flyway pendiente al arrancar
+  # entities: [com.acme.Customer]  # (solo Spring) FQCN de las clases @SealedEntity
 ```
+
+Valores inválidos o en blanco de `schema-mode`/`migration-default`/`batch-size` caen al default sin romper el arranque (`SealedConfig.parse`).
 
 ## Convención de columnas
 
@@ -68,6 +86,15 @@ Por defecto, un campo `email` usa 3 columnas físicas:
 | `hash` | `email_sh` (`sh` = sealed-hash) | `v1:hex(HMAC(pepper, "domain\|normalize(value)"))` |
 
 Override híbrido por campo (opcional): `@Sealed(domain="...", encrypt="...", hash="...", legacy="...", searchable=...)`. Con `searchable=false` no se crea ni mantiene `*_sh`.
+
+El **orden lógico** de las 3 columnas difiere entre ramas, pero el **esquema físico y los nombres son idénticos** (por eso una BBDD sellada por una rama la lee la otra):
+
+| Rama | API de mapeo | Orden de columnas |
+|---|---|---|
+| Hibernate 6 (jakarta) | `@CompositeType` + `@AttributeOverrides` | `[encrypt, hash, legacy]` |
+| Hibernate 5 (javax) | `@Type` + `@Columns` | `[legacy, encrypt, hash]` |
+
+**Invariante de `@Id`:** la PK debe declararse en la **propia clase** de la entidad (o heredarse), con `@Id`; si usas `@Column(name=...)` se respeta el nombre físico. libseal distingue el nombre del **campo Java** (para reflexión, p. ej. el resealer LAZY) del nombre de **columna** (para SQL). `@SealedEntity` es `@Inherited`: puede declararse en una superclase.
 
 ## Uso en la entidad
 
@@ -159,10 +186,10 @@ La búsqueda es por igualdad exacta. No admite `LIKE`, rangos ni ordenación sob
 
 ## Esquema y migración
 
-- `seal.schema-mode=UPDATE` crea las columnas e índices que falten. `VALIDATE` solo comprueba. `VALIDATE_EXPORT` genera el SQL para aplicarlo con Flyway/Liquibase.
-- `migration=LAZY` (defecto): cada fila se sella al leerla o escribirla, sin cortes.
+- `seal.schema-mode=UPDATE` crea las columnas e índices que falten. `VALIDATE` solo comprueba (y falla si hay pendiente). `VALIDATE_EXPORT` genera el SQL para aplicarlo con Flyway/Liquibase.
+- `migration=LAZY` (defecto): cada fila se sella al leerla o escribirla, sin cortes. Solo cuando la fila leída venía **sin sellar** (`*_se IS NULL` con legacy presente) el listener la re-sella en el acto mediante un `UPDATE` explícito (`SealedResealer`), sin depender del dirty-check de Hibernate. Filas ya selladas **no** provocan escrituras extra. Requiere el `DataSource` (lo aporta el arranque); el `UPDATE` es idempotente (`AND *_se IS NULL`).
 - `migration=STRICT`: sella todo al arrancar, por lotes, **todos los campos sellados** de cada tabla (un dominio/AAD por campo). Idempotente (`AND email_se IS NULL`), reanudable y multi-instancia (`FOR UPDATE SKIP LOCKED` donde el motor lo soporta; desactivable con `strict-locking: false` para H2). Combinable como `STRICT_LAZY`.
-- La columna original se conserva hasta una purga explícita (`drop-legacy: true`).
+- `drop-legacy: true` **purga** la columna original (`ALTER TABLE ... DROP COLUMN`) solo cuando el backfill de ese campo está completo (ninguna fila con legacy no nulo y `*_se` nulo). Si queda alguna sin sellar, no la elimina.
 
 Export Flyway (solo `ADD`, nunca `DROP`):
 
@@ -172,6 +199,10 @@ String sql = rec.exportFlyway(SealedModels.toReconciler(models));
 Files.writeString(migrationsDir.resolve("V3__libseal.sql"), sql);
 ```
 
+O al arrancar, sin código: define `seal.export-path` y libseal escribe el DDL pendiente
+(`SealedRuntime.exportFlyway`) antes de aplicar nada. El SQL generado se aplica con Flyway
+real y luego `schema-mode=VALIDATE` pasa (cubierto por test).
+
 ## Uso con Spring Boot 3
 
 ```xml
@@ -179,7 +210,7 @@ Files.writeString(migrationsDir.resolve("V3__libseal.sql"), sql);
 <dependency><groupId>libseal</groupId><artifactId>libseal-hibernate6</artifactId><version>0.1.0-SNAPSHOT</version></dependency>
 ```
 
-La entidad se mapea igual que en Quarkus 3 (subclase por campo + `@AttributeOverrides`, imports `jakarta.*`). La auto-configuración registra `Sealer`, `BlindIndexer`, `SealedCodec`, `SealedConfig` y el `ApplicationRunner` de arranque (reconcilia + backfill STRICT) desde las mismas props `seal.*`; la app solo aporta el bean Tink `Aead`:
+La entidad se mapea igual que en Quarkus 3 (subclase por campo + `@AttributeOverrides`, imports `jakarta.*`). La auto-configuración registra `Sealer`, `BlindIndexer`, `SealedCodec`, `SealedConfig`, un bean `SealedSpringBootstrap` (reconcilia + backfill STRICT + purga legacy + registra el resealer LAZY) y un `ApplicationRunner` que delega en él, desde las mismas props `seal.*`; la app solo aporta el bean Tink `Aead` y la lista `seal.entities` (FQCN) con las clases `@SealedEntity`. El bootstrap es un bean invocable, de modo que en tests se puede llamar `bootstrap.run()` sin levantar la app. Si `seal.export-path` está definido, escribe el SQL Flyway del DDL pendiente antes de aplicar nada.
 
 ```java
 @Bean Aead sealDek() throws Exception {

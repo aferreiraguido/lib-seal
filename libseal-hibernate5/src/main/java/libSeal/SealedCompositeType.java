@@ -108,8 +108,8 @@ public class SealedCompositeType implements CompositeUserType, DynamicParameteri
       SealedCodec codec = SealedRegistry.codec();
       switch (property) {
         case 0: return plain; // legacy dual-write en claro
-        case 1: return codec.toColumns(plain, domain, searchable).encrypt();
-        case 2: return searchable ? codec.toColumns(plain, domain, true).hash() : null;
+        case 1: return codec.sealEncrypt(plain, domain);
+        case 2: return searchable ? codec.hashOnly(plain, domain) : null;
         default: throw new HibernateException("SealedCompositeType: propiedad " + property + " fuera de [0,2]");
       }
     } catch (HibernateException e) {
@@ -145,6 +145,9 @@ public class SealedCompositeType implements CompositeUserType, DynamicParameteri
     String legacy = rs.getString(names[0]);
     String encrypt = rs.getString(names[1]);
     if (legacy == null && encrypt == null) return null;
+    if (encrypt == null && legacy != null) {
+      SealedRegistry.signalLegacyRow(); // fila heredada: el listener la sellara
+    }
     try {
       return SealedRegistry.codec().fromColumns(legacy, encrypt, domain);
     } catch (Exception e) {

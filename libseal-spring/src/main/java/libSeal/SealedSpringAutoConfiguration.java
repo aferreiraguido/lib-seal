@@ -42,9 +42,7 @@ public class SealedSpringAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public SealedConfig sealConfig(SealedSpringProperties props) {
-    return new SealedConfig(
-        SealedConfig.SchemaMode.valueOf(props.getSchemaMode()),
-        SealedMigration.valueOf(props.getMigrationDefault()),
+    return SealedConfig.parse(props.getSchemaMode(), props.getMigrationDefault(),
         props.getBatchSize(), props.isDropLegacy(), props.isStrictLocking());
   }
 
@@ -72,16 +70,16 @@ public class SealedSpringAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   @ConditionalOnBean(DataSource.class)
-  public ApplicationRunner sealBootstrap(DataSource ds, SealedConfig config,
-                                         Sealer sealer, BlindIndexer indexer,
-                                         SealedSpringProperties props) {
-    return args -> {
-      SealedRegistry.init(sealer, indexer);
-      List<SealedModels.EntityModel> models = SealedModels.scan(props.getEntities());
-      if (models.isEmpty()) return;
-      SealedSchemaReconciler reconciler = new SealedSchemaReconciler(ds, config);
-      reconciler.reconcileAll(SealedModels.toReconciler(models));
-      new SealedMigrator(config, sealer, indexer).migrateStrict(ds, models);
-    };
+  public SealedSpringBootstrap sealedSpringBootstrap(DataSource ds, SealedConfig config,
+                                                     Sealer sealer, BlindIndexer indexer,
+                                                     SealedSpringProperties props) {
+    return new SealedSpringBootstrap(ds, config, sealer, indexer, props);
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  @ConditionalOnBean(SealedSpringBootstrap.class)
+  public ApplicationRunner sealBootstrap(SealedSpringBootstrap bootstrap) {
+    return args -> bootstrap.run();
   }
 }

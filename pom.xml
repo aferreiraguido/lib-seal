@@ -39,6 +39,11 @@
     <quarkus2.version>2.13.8.Final</quarkus2.version>
     <spring-boot.version>3.2.5</spring-boot.version>
     <junit4.version>4.13.2</junit4.version>
+    <mockito.version>5.11.0</mockito.version>
+    <flyway.version>10.17.3</flyway.version>
+    <microprofile.config.version>3.0.3</microprofile.config.version>
+    <microprofile.config2.version>2.0.1</microprofile.config2.version>
+    <slf4j.version>2.0.9</slf4j.version>
   </properties>
 
   <!-- Stack legacy Quarkus 2.13 (Hibernate 5 + javax): solo con -Pquarkus2 y red,

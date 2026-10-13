@@ -12,6 +12,7 @@ package libSeal;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.google.crypto.tink.Aead;
@@ -72,6 +73,30 @@ public class SealedHibernate6Test {
     public String email;
   }
 
+  /** Campo no buscable: solo se crea y mantiene la columna cifrada, nunca el hash. */
+  public static class NifType extends SealedCompositeType {
+    public NifType() {
+      super("customer.nif", false);
+    }
+  }
+
+  @SealedEntity(domain = "customer", migration = SealedMigration.LAZY)
+  @Entity
+  @Table(name = "contacts")
+  public static class Contact {
+    @Id @GeneratedValue
+    public Long id;
+
+    @CompositeType(NifType.class)
+    @AttributeOverrides({
+        @AttributeOverride(name = "encrypt", column = @Column(name = "nif_se", length = 2048)),
+        @AttributeOverride(name = "hash", column = @Column(name = "nif_sh", length = 128)),
+        @AttributeOverride(name = "legacy", column = @Column(name = "nif"))
+    })
+    @Sealed(domain = "customer.nif", searchable = false)
+    public String nif;
+  }
+
   private static SessionFactory sf;
   private static TinkSealer tinkSealer;
   private static HmacBlindIndexer indexer;
@@ -95,12 +120,28 @@ public class SealedHibernate6Test {
         .applySetting(AvailableSettings.URL, dbUrl)
         .applySetting(AvailableSettings.USER, "sa")
         .applySetting(AvailableSettings.HBM2DDL_AUTO, "create-drop")
+        .applySetting(AvailableSettings.CURRENT_SESSION_CONTEXT_CLASS, "thread")
         .build();
     MetadataSources sources = new MetadataSources(registry);
     sources.addAnnotatedClass(Customer.class);
+    sources.addAnnotatedClass(Contact.class);
     Metadata metadata = sources.buildMetadata();
     sf = metadata.buildSessionFactory();
+    // LAZY: al leer una fila heredada el listener sella via UPDATE explicito (el
+    // dirty-check no reescribe filas con el mismo valor en Java).
+    org.h2.jdbcx.JdbcDataSource lazyDs = new org.h2.jdbcx.JdbcDataSource();
+    lazyDs.setURL(dbUrl);
+    lazyDs.setUser("sa");
+    resealer = new SealedResealer(lazyDs, SealedConfig.defaults(), tinkSealer, indexer,
+        SealedModels.scan(java.util.Arrays.asList(Customer.class, Contact.class)));
+    SealedRegistry.initDirtyMarker(entity -> {
+      MARKED[0]++;
+      resealer.reseal(entity);
+    });
   }
+
+  private static SealedResealer resealer;
+  static final int[] MARKED = {0};
 
   @AfterClass
   public static void close() {
@@ -186,5 +227,112 @@ public class SealedHibernate6Test {
       assertEquals(1, found.size());
       assertEquals("rot@x.com", found.get(0).email);
     }
+  }
+
+  @Test
+  public void persistComputesEachPrimitiveOnce() {
+    // F1.3: getPropertyValue se invoca una vez por columna; no debe recalcular
+    // el ciphertext ni el hash dos veces por escritura.
+    int[] seals = {0};
+    int[] hashes = {0};
+    Sealer countingSealer = new Sealer() {
+      @Override public String seal(String plain, String aad) { seals[0]++; return tinkSealer.seal(plain, aad); }
+      @Override public String unseal(String ct, String aad) { return tinkSealer.unseal(ct, aad); }
+    };
+    BlindIndexer countingIndexer = new BlindIndexer() {
+      @Override public String hash(String raw, String domain) { hashes[0]++; return indexer.hash(raw, domain); }
+      @Override public String normalize(String raw) { return indexer.normalize(raw); }
+    };
+    SealedRegistry.init(countingSealer, countingIndexer);
+    try (Session s = sf.openSession()) {
+      s.beginTransaction();
+      Customer c = new Customer();
+      c.email = "once@x.com";
+      s.persist(c);
+      s.getTransaction().commit();
+    } finally {
+      SealedRegistry.init(tinkSealer, indexer);
+    }
+    assertEquals("un solo cifrado por escritura", 1, seals[0]);
+    assertEquals("un solo hash por escritura", 1, hashes[0]);
+  }
+
+  @Test
+  public void nonSearchableFieldStoresCipherOnly() throws Exception {
+    // searchable=false: la columna _sh queda siempre NULL (no se calcula ni se busca).
+    Long id;
+    try (Session s = sf.openSession()) {
+      s.beginTransaction();
+      Contact c = new Contact();
+      c.nif = "12345678Z";
+      s.persist(c);
+      s.getTransaction().commit();
+      id = c.id;
+    }
+    try (Connection cn = DriverManager.getConnection(dbUrl, "sa", "");
+         Statement st = cn.createStatement();
+         ResultSet rs = st.executeQuery("SELECT nif, nif_se, nif_sh FROM contacts WHERE id=" + id)) {
+      assertTrue(rs.next());
+      assertEquals("12345678Z", rs.getString(1));   // dual-write legacy
+      assertTrue(rs.getString(2).startsWith("v1:")); // cifrado presente
+      assertNull("no-searchable no escribe hash", rs.getString(3));
+      assertEquals("12345678Z", tinkSealer.unseal(rs.getString(2), "customer.nif"));
+    }
+    // Recuperación por Id sigue descifrando el valor
+    try (Session s = sf.openSession()) {
+      Contact loaded = s.get(Contact.class, id);
+      assertEquals("12345678Z", loaded.nif);
+    }
+  }
+
+  @Test
+  public void lazySealsLegacyRowOnFlush() throws Exception {
+    // Fila heredada en claro (email_se NULL), como venía de un esquema antiguo.
+    long id = 990001L;
+    try (Connection cn = DriverManager.getConnection(dbUrl, "sa", "");
+         Statement st = cn.createStatement()) {
+      st.execute("INSERT INTO customers(id, email) VALUES (" + id + ", 'legacy@x.com')");
+    }
+    // Leer: el listener sella la fila heredada en el acto via UPDATE explicito.
+    int before = MARKED[0];
+    try (Session s = sf.openSession()) {
+      s.beginTransaction();
+      Customer loaded = s.get(Customer.class, id);
+      assertEquals("legacy@x.com", loaded.email); // leída del legacy
+      s.getTransaction().commit();
+      assertEquals("el listener LAZY debe dispararse 1 vez", before + 1, MARKED[0]);
+    }
+    try (Connection cn = DriverManager.getConnection(dbUrl, "sa", "");
+         Statement st = cn.createStatement();
+         ResultSet rs = st.executeQuery("SELECT email_se, email_sh FROM customers WHERE id=" + id)) {
+      assertTrue(rs.next());
+      assertNotNull("LAZY debe sellar la fila al flush", rs.getString(1));
+      assertTrue(rs.getString(1).startsWith("v1:"));
+      assertNotNull(rs.getString(2));
+    }
+  }
+
+  @Test
+  public void lazyDoesNotResealAlreadySealedRows() throws Exception {
+    // A2: cargar filas ya selladas NO debe disparar re-sellado (0 round-trips extra).
+    Long id;
+    try (Session s = sf.openSession()) {
+      s.beginTransaction();
+      Customer c = new Customer();
+      c.email = "fresh@x.com";
+      s.persist(c);
+      s.getTransaction().commit();
+      id = c.id;
+    }
+    int before = MARKED[0];
+    for (int i = 0; i < 5; i++) {
+      try (Session s = sf.openSession()) {
+        s.beginTransaction();
+        Customer loaded = s.get(Customer.class, id);
+        assertEquals("fresh@x.com", loaded.email);
+        s.getTransaction().commit();
+      }
+    }
+    assertEquals("filas ya selladas no deben re-sellarse", before, MARKED[0]);
   }
 }

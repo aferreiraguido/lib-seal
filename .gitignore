@@ -36,3 +36,7 @@ Thumbs.db
 # Patch leftovers
 *.orig
 *.rej
+
+# Tooling scratch files (e.g. java-mcp-server Spoon classpath)
+*.tmp
+spoon.classpath*.tmp

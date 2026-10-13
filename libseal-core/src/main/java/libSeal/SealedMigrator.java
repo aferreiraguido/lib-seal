@@ -168,6 +168,54 @@ public final class SealedMigrator {
     }
   }
 
+  /**
+   * Purga explícita de la columna legacy ({@code drop-legacy: true}).
+   * Solo elimina la columna {@code legacy} de un campo si TODAS las filas con
+   * legacy no nulo ya tienen {@code *_se} sellado (backfill completo), para no
+   * perder datos en claro. Idempotente: si la columna ya no existe, no hace nada.
+   * <p>El DROP lo ejecuta el reconciliador; este método decide el "cuándo" seguro.
+   */
+  public List<DropResult> dropLegacyColumns(DataSource ds, List<SealedModels.EntityModel> models) throws Exception {
+    List<DropResult> out = new ArrayList<>();
+    if (!config.dropLegacy()) return out; // gated: solo si drop-legacy=true
+    for (SealedModels.EntityModel m : models) {
+      for (SealedModels.FieldModel f : m.fields()) {
+        SealedCodec.Resolved cols = f.cols();
+        if (!hasColumn(ds, m.table(), cols.legacyCol())) continue;
+        long pending = countUnsealedLegacy(ds, m, f);
+        if (pending > 0) {
+          out.add(new DropResult(m.table(), cols.legacyCol(), false, pending));
+          continue;
+        }
+        try (Connection cn = ds.getConnection(); var st = cn.createStatement()) {
+          st.execute("ALTER TABLE " + m.table() + " DROP COLUMN " + cols.legacyCol());
+        }
+        out.add(new DropResult(m.table(), cols.legacyCol(), true, 0));
+      }
+    }
+    return out;
+  }
+
+  private long countUnsealedLegacy(DataSource ds, SealedModels.EntityModel m, SealedModels.FieldModel f) throws Exception {
+    SealedCodec.Resolved cols = f.cols();
+    String sql = "SELECT COUNT(*) FROM " + m.table()
+        + " WHERE " + cols.legacyCol() + " IS NOT NULL AND " + cols.encryptCol() + " IS NULL";
+    try (Connection cn = ds.getConnection();
+         PreparedStatement ps = cn.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+      return rs.next() ? rs.getLong(1) : 0L;
+    }
+  }
+
+  private static boolean hasColumn(DataSource ds, String table, String column) throws Exception {
+    try (Connection cn = ds.getConnection()) {
+      return SealedSchemaReconciler.hasColumn(cn.getMetaData(), table, column);
+    }
+  }
+
+  /** Resultado de purga por campo: {@code dropped=false} si quedaban filas sin sellar. */
+  public record DropResult(String table, String legacyColumn, boolean dropped, long unsealedRows) {}
+
   private List<Row> selectBatch(DataSource ds, SealedModels.EntityModel m, SealedModels.FieldModel f) throws Exception {
     SealedCodec.Resolved cols = f.cols();
     String sql = "SELECT " + m.idColumn() + ", " + cols.legacyCol() + " FROM " + m.table()

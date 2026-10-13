@@ -45,6 +45,22 @@ public final class SealedCodec {
     return new EncHash(encrypt, hash);
   }
 
+  /**
+   * Solo la columna cifrada. Hibernate 6 invoca {@code getPropertyValue} una vez
+   * por columna: separar encrypt/hash evita calcular ambos dos veces por escritura.
+   * null -> null.
+   */
+  public String sealEncrypt(String plain, String domain) {
+    if (plain == null) return null;
+    return sealer.seal(plain, domain);
+  }
+
+  /** Solo la columna de busqueda (blind index). null -> null. */
+  public String hashOnly(String plain, String domain) {
+    if (plain == null) return null;
+    return indexer.hash(plain, domain);
+  }
+
   /** Columnas -> Java. Prioridad encrypt descifrado, fallback legacy plano (migracion LAZY). */
   public String fromColumns(String legacy, String encrypt, String domain) {
     if (encrypt != null) {

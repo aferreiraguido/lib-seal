@@ -13,10 +13,12 @@ package libSeal;
 import javax.persistence.PostLoad;
 
 /**
- * v2 DTO limpio: el hash lo escribe SealedCompositeType en nullSafeSet.
- * Este listener solo fuerza LAZY: si la fila venia de legacy (encrypt==null),
- * re-asigna el mismo valor para marcar la entidad sucia y que el proximo
- * flush la selle (encrypt+hash) sin codigo manual en el DTO.
+ * Fuerza LAZY: si la fila venia de legacy (encrypt==null), hay que reescribirla
+ * sellada aunque el valor en Java no cambie. El dirty-check de Hibernate no detecta
+ * "mismo valor", asi que {@code @PostLoad} delega en
+ * {@link SealedRegistry#markDirty(Object)} (resellador registrado por el glue de
+ * Quarkus 2.13/Spring). Sin marcador registrado no hace nada: la fila se sellara
+ * en el proximo UPDATE real.
  * Uso: {@code @EntityListeners(SealedEntityListener.class)}.
  */
 public class SealedEntityListener {
@@ -24,16 +26,9 @@ public class SealedEntityListener {
   @PostLoad
   public void lazyTouch(Object entity) {
     if (entity == null) return;
-    Class<?> c = entity.getClass();
-    if (c.getAnnotation(SealedEntity.class) == null) return;
-    // El CompositeType ya devolvio legacy como valor. Re-set para dirty-check:
-    for (java.lang.reflect.Field f : c.getDeclaredFields()) {
-      if (f.getAnnotation(Sealed.class) == null) continue;
-      try {
-        f.setAccessible(true);
-        Object v = f.get(entity);
-        if (v != null) f.set(entity, v);
-      } catch (Exception ignored) {}
-    }
+    boolean legacyRow = SealedRegistry.consumeLegacyRow();
+    if (!legacyRow) return;
+    if (!SealedRegistry.hasDirtyMarker()) return;
+    SealedRegistry.markDirty(entity);
   }
 }

@@ -24,36 +24,83 @@ public final class SealedModels {
   private SealedModels() {}
 
   public record FieldModel(String field, Sealed ann, SealedCodec.Resolved cols) {}
-  public record EntityModel(Class<?> entity, String table, String idColumn, SealedMigration migration, List<FieldModel> fields) {}
+
+  /**
+   * Descriptor por entidad/tabla.
+   * <ul>
+   *   <li>{@code idField}: nombre del campo Java con {@code @Id} (para reflexion).</li>
+   *   <li>{@code idColumn}: nombre de columna fisica (para SQL); igual a idField si no hay {@code @Column(name)}.</li>
+   * </ul>
+   */
+  public record EntityModel(Class<?> entity, String table, String idField, String idColumn,
+                            SealedMigration migration, List<FieldModel> fields) {
+
+    /** Compat: modelos sin distincion field/column (idField == idColumn). */
+    public EntityModel(Class<?> entity, String table, String idColumn,
+                       SealedMigration migration, List<FieldModel> fields) {
+      this(entity, table, idColumn, idColumn, migration, fields);
+    }
+  }
 
   /** Escanea clases dadas. v1 manual (la app aporta la lista, sin classpath-scanning magico). */
   public static List<EntityModel> scan(List<Class<?>> entities) {
     List<EntityModel> out = new ArrayList<>();
     for (Class<?> c : entities) {
-      SealedEntity se = c.getAnnotation(SealedEntity.class);
-      if (se == null) continue;
-      String table = c.getSimpleName().toLowerCase() + "s";
-      // Agnóstico javax/jakarta: se lee por nombre para no importar ninguna de las dos APIs.
-      String tableName = stringMember(annotationByName(c, "jakarta.persistence.Table", "javax.persistence.Table"), "name");
-      if (tableName != null && !tableName.isEmpty()) table = tableName;
-      String idColumn = "id";
-      for (Field f : c.getDeclaredFields()) {
-        try {
+      for (Class<?> seClass : sealedHierarchy(c)) {
+        SealedEntity se = seClass.getAnnotation(SealedEntity.class);
+        if (se == null) continue;
+        String table = seClass.getSimpleName().toLowerCase() + "s";
+        // Agnóstico javax/jakarta: se lee por nombre para no importar ninguna de las dos APIs.
+        String tableName = stringMember(annotationByName(seClass, "jakarta.persistence.Table", "javax.persistence.Table"), "name");
+        if (tableName != null && !tableName.isEmpty()) table = tableName;
+
+        String idField = "id";
+        String idColumn = "id";
+        Field idFound = null;
+        for (Field f : hierarchyFields(seClass)) {
           if (annotationByName(f, "jakarta.persistence.Id", "javax.persistence.Id") != null) {
+            idField = f.getName();
             idColumn = f.getName();
             String colName = stringMember(
                 annotationByName(f, "jakarta.persistence.Column", "javax.persistence.Column"), "name");
             if (colName != null && !colName.isEmpty()) idColumn = colName;
+            idFound = f;
             break;
           }
-        } catch (Exception ignored) {}
+        }
+        List<FieldModel> fs = new ArrayList<>();
+        for (Field f : hierarchyFields(seClass)) {
+          Sealed ann = f.getAnnotation(Sealed.class);
+          if (ann != null) {
+            // El id nunca se sella aunque lleve @Sealed por error de configuracion.
+            if (idFound != null && f.getName().equals(idFound.getName())) continue;
+            fs.add(new FieldModel(f.getName(), ann, SealedCodec.resolve(f.getName(), ann)));
+          }
+        }
+        out.add(new EntityModel(seClass, table, idField, idColumn, se.migration(), fs));
       }
-      List<FieldModel> fs = new ArrayList<>();
-      for (Field f : c.getDeclaredFields()) {
-        Sealed ann = f.getAnnotation(Sealed.class);
-        if (ann != null) fs.add(new FieldModel(f.getName(), ann, SealedCodec.resolve(f.getName(), ann)));
-      }
-      out.add(new EntityModel(c, table, idColumn, se.migration(), fs));
+    }
+    return out;
+  }
+
+  /**
+   * Sube la jerarquia desde {@code c} hasta (e incluyendo) la primera clase con
+   * {@code @SealedEntity}; cubre entidades cuyo tag vive en una superclase.
+   */
+  static List<Class<?>> sealedHierarchy(Class<?> c) {
+    List<Class<?>> chain = new ArrayList<>();
+    for (Class<?> cur = c; cur != null && cur != Object.class; cur = cur.getSuperclass()) chain.add(cur);
+    for (Class<?> cur : chain) {
+      if (cur.getAnnotation(SealedEntity.class) != null) return List.of(cur);
+    }
+    return chain.isEmpty() ? List.of(c) : List.of(chain.get(chain.size() - 1));
+  }
+
+  /** Campos de toda la jerarquia (subclase primero), incluye heredados de superclases. */
+  static List<Field> hierarchyFields(Class<?> c) {
+    List<Field> out = new ArrayList<>();
+    for (Class<?> cur = c; cur != null && cur != Object.class; cur = cur.getSuperclass()) {
+      for (Field f : cur.getDeclaredFields()) out.add(f);
     }
     return out;
   }

@@ -30,6 +30,9 @@ public class SealedSpringProperties {
   private boolean dropLegacy = false;
   private boolean strictLocking = true;
 
+  /** Si se define, escribe el SQL Flyway del DDL pendiente en esta ruta al arrancar. */
+  private String exportPath;
+
   /** Clases con @SealedEntity a gestionar (nombres FQCN). Vacio = no-op. */
   private List<Class<?>> entities = new ArrayList<>();
 
@@ -47,6 +50,8 @@ public class SealedSpringProperties {
   public void setDropLegacy(boolean dropLegacy) { this.dropLegacy = dropLegacy; }
   public boolean isStrictLocking() { return strictLocking; }
   public void setStrictLocking(boolean strictLocking) { this.strictLocking = strictLocking; }
+  public String getExportPath() { return exportPath; }
+  public void setExportPath(String exportPath) { this.exportPath = exportPath; }
   public List<Class<?>> getEntities() { return entities; }
   public void setEntities(List<Class<?>> entities) { this.entities = entities; }
 }

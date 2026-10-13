@@ -36,6 +36,27 @@ public final class SealedConfig {
     return new SealedConfig(SchemaMode.UPDATE, SealedMigration.LAZY, 500, false, true);
   }
 
+  /**
+   * Construye desde valores de texto (yaml/env) con defaults seguros.
+   * Framework-agnostico: la app (Quarkus/Spring) lee sus props y delega el parse aqui.
+   * Valores nulos/blank o invalidos caen al default; nunca lanza por un typo de config.
+   */
+  public static SealedConfig parse(String schemaMode, String migrationDefault, int batchSize,
+                                   boolean dropLegacy, boolean strictLocking) {
+    SchemaMode sm = SchemaMode.UPDATE;
+    if (schemaMode != null && !schemaMode.isBlank()) {
+      try { sm = SchemaMode.valueOf(schemaMode.trim().toUpperCase(java.util.Locale.ROOT)); }
+      catch (IllegalArgumentException ignored) { sm = SchemaMode.UPDATE; }
+    }
+    SealedMigration md = SealedMigration.LAZY;
+    if (migrationDefault != null && !migrationDefault.isBlank()) {
+      try { md = SealedMigration.valueOf(migrationDefault.trim().toUpperCase(java.util.Locale.ROOT)); }
+      catch (IllegalArgumentException ignored) { md = SealedMigration.LAZY; }
+    }
+    int bs = batchSize > 0 ? batchSize : 500;
+    return new SealedConfig(sm, md, bs, dropLegacy, strictLocking);
+  }
+
   /** Copia sin bloqueo pesimista (motores sin SKIP LOCKED). */
   public SealedConfig withoutLocking() {
     return new SealedConfig(schemaMode, migrationDefault, batchSize, dropLegacy, false);

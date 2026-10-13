@@ -81,6 +81,20 @@ public class SealedCompositeType implements CompositeUserType<String>, DynamicPa
   String getDomain() { return domain; }
 
   /**
+   * Memo por hilo del ultimo valor sellado: Hibernate 6 invoca {@code getPropertyValue}
+   * varias veces por columna y por fila durante un mismo flush, y el tipo es un
+   * singleton por SessionFactory. Cachear el ultimo par (encrypt,hash) por identidad
+   * de valor evita recalcular AES/HMAC repetidamente sin estado compartido mutable.
+   */
+  private static final ThreadLocal<Memo> MEMO = ThreadLocal.withInitial(Memo::new);
+
+  private static final class Memo {
+    String value;
+    String encrypt;
+    String hash;
+  }
+
+  /**
    * Columnas al guardar. Orden alfabetico del embeddable: 0 encrypt,
    * 1 hash (null si no searchable o valor null), 2 legacy (dual-write en claro).
    */
@@ -88,10 +102,17 @@ public class SealedCompositeType implements CompositeUserType<String>, DynamicPa
   public Object getPropertyValue(String component, int property) {
     if (component == null) return null;
     try {
+      if (property == 2) return component; // legacy dual-write: no requiere cripto
       SealedCodec codec = SealedRegistry.codec();
+      Memo m = MEMO.get();
+      if (m.value != component) {
+        m.value = component;
+        m.encrypt = codec.sealEncrypt(component, domain);
+        m.hash = searchable ? codec.hashOnly(component, domain) : null;
+      }
       return switch (property) {
-        case 0 -> codec.toColumns(component, domain, searchable).encrypt();
-        case 1 -> searchable ? codec.toColumns(component, domain, true).hash() : null;
+        case 0 -> m.encrypt;
+        case 1 -> m.hash;
         case 2 -> component;
         default -> throw new HibernateException("SealedCompositeType: propiedad " + property + " fuera de [0,2]");
       };
@@ -108,6 +129,9 @@ public class SealedCompositeType implements CompositeUserType<String>, DynamicPa
     Object[] v = values.getValues();
     String encrypt = v.length > 0 ? (String) v[0] : null;
     String legacy = v.length > 2 ? (String) v[2] : null;
+    if (encrypt == null && legacy != null) {
+      SealedRegistry.signalLegacyRow(); // fila heredada: el listener la sellara
+    }
     try {
       return SealedRegistry.codec().fromColumns(legacy, encrypt, domain);
     } catch (Exception e) {

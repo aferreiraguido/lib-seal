@@ -18,12 +18,59 @@ package libSeal;
 public final class SealedRegistry {
   private static volatile Sealer sealer;
   private static volatile BlindIndexer indexer;
+  private static volatile DirtyMarker dirtyMarker;
 
   private SealedRegistry() {}
+
+  /**
+   * Marca una entidad gestionada como "sucia" para forzar su UPDATE en el proximo
+   * flush. Necesario para LAZY: al leer una fila heredada (sin {@code *_se}) hay que
+   * reescribirla sellada aunque el valor en Java no cambie; el dirty-check de
+   * Hibernate no detecta "mismo valor" y necesita ayuda.
+   */
+  @FunctionalInterface
+  public interface DirtyMarker {
+    void mark(Object entity);
+  }
 
   public static void init(Sealer s, BlindIndexer i) {
     sealer = s;
     indexer = i;
+  }
+
+  /** Registra (opcional) el marcador de suciedad ligado al Session/EntityManager actual. */
+  public static void initDirtyMarker(DirtyMarker marker) {
+    dirtyMarker = marker;
+  }
+
+  /** Marca la entidad si hay marcador registrado; no falla si no lo hay (best-effort). */
+  public static void markDirty(Object entity) {
+    DirtyMarker m = dirtyMarker;
+    if (m != null) m.mark(entity);
+  }
+
+  public static boolean hasDirtyMarker() {
+    return dirtyMarker != null;
+  }
+
+  /**
+   * Aviso de la capa de mapeo (CompositeUserType/nullSafeGet) -> listener: la fila
+   * que se acaba de leer venia SIN sellar ({@code *_se IS NULL}, legacy presente).
+   * Evita que el listener dispare un re-sellado en cada lectura de filas ya selladas.
+   * El flag se consume en el mismo hilo por el listener (PostLoad tras instanciar).
+   */
+  private static final ThreadLocal<Boolean> LEGACY_ROW = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+  /** Llamado por el CompositeUserType cuando la fila vino de legacy. */
+  public static void signalLegacyRow() {
+    LEGACY_ROW.set(Boolean.TRUE);
+  }
+
+  /** El listener lo consulta; leerlo limpia el flag (una lectura = una senal). */
+  public static boolean consumeLegacyRow() {
+    boolean v = Boolean.TRUE.equals(LEGACY_ROW.get());
+    LEGACY_ROW.remove();
+    return v;
   }
 
   public static Sealer sealer() {

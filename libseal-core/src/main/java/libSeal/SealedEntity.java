@@ -12,6 +12,7 @@ package libSeal;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -19,8 +20,10 @@ import java.lang.annotation.Target;
 /**
  * Marca una entidad JPA como gestionada por libseal (DB-only).
  * El bootstrap verifica por modelo/tabla al arrancar y ajusta DDL + migra.
+ * {@code @Inherited} para que las subclases (y proxies de Hibernate) la hereden.
  */
 @Documented
+@Inherited
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
 public @interface SealedEntity {

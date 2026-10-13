@@ -103,7 +103,17 @@ public class SealedHibernate5Test {
     sources.addAnnotatedClass(Customer.class);
     Metadata metadata = sources.buildMetadata();
     sf = metadata.buildSessionFactory();
+    // LAZY: al leer una fila heredada el listener la sella via UPDATE explicito.
+    org.h2.jdbcx.JdbcDataSource lazyDs = new org.h2.jdbcx.JdbcDataSource();
+    lazyDs.setURL(dbUrl);
+    lazyDs.setUser("sa");
+    resealer = new SealedResealer(lazyDs, SealedConfig.defaults(), tinkSealer, indexer,
+        SealedModels.scan(java.util.Collections.singletonList(Customer.class)));
+    SealedRegistry.initDirtyMarker(entity -> { MARKED[0]++; resealer.reseal(entity); });
   }
+
+  private static SealedResealer resealer;
+  static final int[] MARKED = {0};
 
   @AfterClass
   public static void close() {
@@ -171,6 +181,29 @@ public class SealedHibernate5Test {
           "FROM " + Customer.class.getName() + " e WHERE e.email.hash IN :hashes", Customer.class)
           .setParameter("hashes", java.util.Arrays.asList("v0:deadbeef", h)).getResultList();
       assertEquals(1, viaIn.size());
+    }
+  }
+
+  @Test
+  public void lazySealsLegacyRowOnLoad() throws Exception {
+    long id = 990001L;
+    try (Connection cn = DriverManager.getConnection(dbUrl, "sa", "");
+         Statement st = cn.createStatement()) {
+      st.execute("INSERT INTO customers(id, email) VALUES (" + id + ", 'legacy@x.com')");
+    }
+    try (Session s = sf.openSession()) {
+      s.beginTransaction();
+      Customer loaded = s.get(Customer.class, id);
+      assertEquals("legacy@x.com", loaded.email);
+      s.getTransaction().commit();
+      assertEquals("el listener LAZY debe dispararse", 1, MARKED[0]);
+    }
+    try (Connection cn = DriverManager.getConnection(dbUrl, "sa", "");
+         Statement st = cn.createStatement();
+         ResultSet rs = st.executeQuery("SELECT email_se, email_sh FROM customers WHERE id=" + id)) {
+      assertTrue(rs.next());
+      assertNotNull("LAZY debe sellar la fila", rs.getString(1));
+      assertNotNull(rs.getString(2));
     }
   }
 }
